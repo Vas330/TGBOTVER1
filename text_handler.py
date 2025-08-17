@@ -1,6 +1,7 @@
 # text_handler.py
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from datetime import datetime
 
 from state_manager import user_state
 from handlers_common import handle_admin_command
@@ -153,7 +154,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 user_state.set_state(user_id, None)
                 return
 
-            # СОЗДАНИЕ ЗАКАЗОВ
+            # СОЗДАНИЕ ЗАКАЗОВ - ИСПРАВЛЕННАЯ ВЕРСИЯ
             elif state == 'order_description':
                 client_login = user_state.get_client_by_chat_id(user_id)
                 if not client_login:
@@ -176,17 +177,89 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 return
 
             elif state == 'order_budget':
-                from utils import is_valid_number, parse_number
+                from utils import is_valid_number, parse_number, format_order_info, calculate_end_time, format_time_remaining
+                
                 if is_valid_number(text):
                     budget = parse_number(text)
                     context.user_data['budget'] = text
                     context.user_data['order_amount'] = budget
+                    client_login = context.user_data.get('client_login')
 
                     await update.message.reply_text(
                         "✅ Спасибо за предоставленную информацию. Мы скоро свяжемся с вами."
                     )
 
-                    # Здесь можно добавить логику отправки заказа исполнителю
+                    # ИЩЕМ ИСПОЛНИТЕЛЯ С НАИВЫСШИМ РЕЙТИНГОМ
+                    top_entrepreneur = user_state.get_top_entrepreneur()
+                    print(f"🔥 DEBUG: Найден топ исполнитель: {top_entrepreneur}")
+                    
+                    if top_entrepreneur:
+                        top_entrepreneur_data = user_state.entrepreneurs[top_entrepreneur]
+                        top_entrepreneur_chat_id = top_entrepreneur_data.get('chat_id')
+                        print(f"🔥 DEBUG: Chat ID исполнителя: {top_entrepreneur_chat_id}")
+
+                        if top_entrepreneur_chat_id:
+                            # ФОРМИРУЕМ ИНФОРМАЦИЮ О ЗАКАЗЕ
+                            order_info_text = format_order_info(
+                                context.user_data.get('order_description', 'Не указано'),
+                                context.user_data.get('deadline', 'Не указано'),
+                                context.user_data['budget'],
+                                client_login
+                            )
+
+                            # КНОПКИ ДЛЯ ИСПОЛНИТЕЛЯ
+                            keyboard = [
+                                [InlineKeyboardButton("✅ Принять заказ", callback_data=f'accept_order_{user_id}')],
+                                [InlineKeyboardButton("❌ Отказаться", callback_data=f'decline_order_{user_id}')]
+                            ]
+                            reply_markup = InlineKeyboardMarkup(keyboard)
+
+                            # ОТПРАВЛЯЕМ ЗАКАЗ ИСПОЛНИТЕЛЮ
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=top_entrepreneur_chat_id,
+                                    text=order_info_text,
+                                    reply_markup=reply_markup
+                                )
+                                print(f"🔥 DEBUG: Заказ отправлен исполнителю!")
+                            except Exception as e:
+                                print(f"❌ Ошибка отправки заказа: {e}")
+                                await update.message.reply_text(f"❌ Ошибка отправки заказа исполнителю: {e}")
+
+                            # СОХРАНЯЕМ ЗАКАЗ В БАЗЕ
+                            order_obj = {
+                                'description': order_info_text,
+                                'client_login': client_login,
+                                'client_chat_id': user_id,
+                                'budget': budget,
+                                'deadline_text': context.user_data.get('deadline', 'Не указано'),
+                                'created_at': datetime.now(),
+                                'accepted': False,
+                                'timer_active': False
+                            }
+
+                            user_state.add_order(top_entrepreneur, order_obj)
+                            print(f"🔥 DEBUG: Заказ сохранен в базе!")
+
+                            # УСТАНАВЛИВАЕМ ТАЙМЕР
+                            end_time = calculate_end_time(context.user_data.get('deadline', ''))
+                            if end_time:
+                                orders_list = user_state.get_orders(top_entrepreneur)
+                                if orders_list:
+                                    order_index = len(orders_list) - 1
+                                    user_state.update_order_timer(top_entrepreneur, order_index, end_time)
+                                    await update.message.reply_text(
+                                        f"⏱ Таймер заказа запущен! Срок выполнения: {format_time_remaining(end_time)}"
+                                    )
+                        else:
+                            await update.message.reply_text(
+                                "❌ К сожалению, исполнитель с наивысшим рейтингом сейчас недоступен."
+                            )
+                    else:
+                        await update.message.reply_text(
+                            "❌ К сожалению, в системе нет доступных исполнителей."
+                        )
+
                     user_state.set_state(user_id, None)
                 else:
                     await update.message.reply_text(
