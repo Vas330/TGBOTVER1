@@ -1,12 +1,9 @@
 # text_handler.py
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from state_manager import user_state
 from handlers_common import handle_admin_command
-from handlers_client import handle_order_creation, handle_client_auth, handle_chat_messages
-from handlers_contractor import handle_login_process
-from handlers_admin import handle_registration_process, handle_admin_updates, handle_portfolio_addition
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -39,39 +36,279 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         print(f"🔥 Обрабатываем состояние: {state}")
 
         try:
-            # Обработка чатов
-            if await handle_chat_messages(update, context, state):
+            # АВТОРИЗАЦИЯ КЛИЕНТОВ
+            if state == 'client_login_username':
+                context.user_data['login_client_login'] = text
+                await update.message.reply_text("Введите пароль:")
+                user_state.set_state(user_id, 'client_login_password')
                 return
 
-            # Обработка создания заказов клиентами
-            if await handle_order_creation(update, context, state):
+            elif state == 'client_login_password':
+                login = context.user_data.get('login_client_login')
+                password = text
+
+                if login and user_state.check_client(login, password):
+                    user_state.set_client_chat_id(login, user_id)
+                    
+                    keyboard = [
+                        [InlineKeyboardButton("Создать заказ", callback_data='create_order')],
+                        [InlineKeyboardButton("Наши работы", callback_data='our_works')],
+                        [InlineKeyboardButton("Выйти", callback_data='client_logout')]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(
+                        f"✅ Добро пожаловать, {login}!",
+                        reply_markup=reply_markup
+                    )
+                    context.user_data['client_login'] = login
+                else:
+                    await update.message.reply_text("❌ Неверный логин или пароль. Попробуйте снова.")
+
+                user_state.set_state(user_id, None)
                 return
 
-            # Обработка авторизации клиентов
-            if await handle_client_auth(update, context, state):
+            # РЕГИСТРАЦИЯ КЛИЕНТОВ
+            elif state == 'client_register_username':
+                context.user_data['register_client_login'] = text
+                await update.message.reply_text("Введите пароль:")
+                user_state.set_state(user_id, 'client_register_password')
                 return
 
-            # Обработка авторизации исполнителей
-            if await handle_login_process(update, context, state):
+            elif state == 'client_register_password':
+                login = context.user_data.get('register_client_login')
+                password = text
+
+                if login:
+                    if user_state.register_client(login, password, chat_id=user_id):
+                        keyboard = [
+                            [InlineKeyboardButton("Создать заказ", callback_data='create_order')],
+                            [InlineKeyboardButton("Наши работы", callback_data='our_works')],
+                            [InlineKeyboardButton("Выйти", callback_data='client_logout')]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        await update.message.reply_text(
+                            f"✅ Регистрация успешна! Добро пожаловать, {login}!",
+                            reply_markup=reply_markup
+                        )
+                        context.user_data['client_login'] = login
+                    else:
+                        await update.message.reply_text(
+                            "❌ Пользователь с таким логином уже существует. Попробуйте другой логин."
+                        )
+                else:
+                    await update.message.reply_text("❌ Ошибка при регистрации.")
+
+                user_state.set_state(user_id, None)
                 return
 
-            # Обработка регистрации исполнителей (админ)
-            if await handle_registration_process(update, context, state):
+            # АВТОРИЗАЦИЯ ИСПОЛНИТЕЛЕЙ
+            elif state == 'login':
+                context.user_data['login'] = text
+                await update.message.reply_text("Введите пароль:")
+                user_state.set_state(user_id, 'password')
                 return
 
-            # Обработка административных обновлений (включая удаление портфолио)
-            if await handle_admin_updates(update, context, state):
+            elif state == 'password':
+                login = context.user_data.get('login')
+                password = text
+
+                if login and user_state.check_entrepreneur(login, password):
+                    # Успешный вход
+                    user_state.set_entrepreneur_chat_id(login, user_id)
+                    balance = user_state.get_entrepreneur_balance(login)
+
+                    keyboard = [
+                        [InlineKeyboardButton("Мои заказы", callback_data='my_orders')],
+                        [InlineKeyboardButton("Выйти", callback_data='logout')]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(
+                        f"✅ Добро пожаловать в систему, {login}!\nВаш баланс: {balance} руб.",
+                        reply_markup=reply_markup
+                    )
+                    context.user_data['contractor_login'] = login
+                else:
+                    await update.message.reply_text("❌ Данные неверные. Попробуйте снова.")
+
+                user_state.set_state(user_id, None)
                 return
 
-            # ОБРАБОТКА СТАРОГО ФОРМАТА ПОРТФОЛИО (упрощенная и рабочая версия)
-            if state.startswith('add_'):
+            # РЕГИСТРАЦИЯ ИСПОЛНИТЕЛЕЙ (АДМИН)
+            elif state == 'register_login':
+                context.user_data['register_login'] = text
+                await update.message.reply_text("Введите пароль:")
+                user_state.set_state(user_id, 'register_password')
+                return
+
+            elif state == 'register_password':
+                login = context.user_data.get('register_login')
+                password = text
+
+                if login:
+                    user_state.register_entrepreneur(login, password, chat_id=user_id)
+                    await update.message.reply_text(f"✅ Исполнитель {login} зарегистрирован!")
+                else:
+                    await update.message.reply_text("❌ Ошибка при регистрации.")
+
+                user_state.set_state(user_id, None)
+                return
+
+            # СОЗДАНИЕ ЗАКАЗОВ
+            elif state == 'order_description':
+                client_login = user_state.get_client_by_chat_id(user_id)
+                if not client_login:
+                    await update.message.reply_text("❌ Ошибка: необходимо войти в аккаунт.")
+                    user_state.set_state(user_id, None)
+                    return
+
+                context.user_data['order_description'] = text
+                context.user_data['client_login'] = client_login
+                await update.message.reply_text("1. Какие у нас есть сроки?")
+                user_state.set_state(user_id, 'order_deadline')
+                return
+
+            elif state == 'order_deadline':
+                context.user_data['deadline'] = text
+                await update.message.reply_text(
+                    "2. Какой у вас ориентировочный бюджет? (Введите число, например 15 000)"
+                )
+                user_state.set_state(user_id, 'order_budget')
+                return
+
+            elif state == 'order_budget':
+                from utils import is_valid_number, parse_number
+                if is_valid_number(text):
+                    budget = parse_number(text)
+                    context.user_data['budget'] = text
+                    context.user_data['order_amount'] = budget
+
+                    await update.message.reply_text(
+                        "✅ Спасибо за предоставленную информацию. Мы скоро свяжемся с вами."
+                    )
+
+                    # Здесь можно добавить логику отправки заказа исполнителю
+                    user_state.set_state(user_id, None)
+                else:
+                    await update.message.reply_text(
+                        "❌ Просим вас написать число. Это поможет нам подобрать лучшее решение для вашей ситуации."
+                    )
+                return
+
+            # ОБРАБОТКА ПОРТФОЛИО (старый формат)
+            elif state.startswith('add_'):
                 await handle_old_portfolio_format(update, context, state, text)
                 return
 
-            # Если ничего не подошло
-            print(f"🔥 Неизвестное состояние: {state}")
-            await update.message.reply_text(f"Неизвестное состояние: {state}")
-            user_state.set_state(user_id, None)
+            # АДМИНСКИЕ ОПЕРАЦИИ
+            elif state.startswith('new_rating_'):
+                login = state.split('_')[2]
+                try:
+                    rating = int(text)
+                    if 1 <= rating <= 10:
+                        if user_state.update_entrepreneur_rating(login, rating):
+                            await update.message.reply_text("✅ Рейтинг обновлен!")
+                        else:
+                            await update.message.reply_text("❌ Исполнитель не найден.")
+                    else:
+                        await update.message.reply_text("❌ Рейтинг должен быть от 1 до 10.")
+                except ValueError:
+                    await update.message.reply_text("❌ Введите число.")
+                user_state.set_state(user_id, None)
+                return
+
+            elif state.startswith('new_balance_'):
+                login = state.split('_')[2]
+                try:
+                    balance = float(text.replace(' ', ''))
+                    if user_state.set_entrepreneur_balance(login, balance):
+                        await update.message.reply_text("✅ Баланс обновлен!")
+                    else:
+                        await update.message.reply_text("❌ Исполнитель не найден.")
+                except ValueError:
+                    await update.message.reply_text("❌ Введите корректную сумму.")
+                user_state.set_state(user_id, None)
+                return
+
+            elif state.startswith('delete_confirm_') and not state.startswith('delete_confirm_sites') and not state.startswith('delete_confirm_video'):
+                # Удаление исполнителя
+                parts = state.split('_')
+                if len(parts) >= 3:
+                    login = '_'.join(parts[2:])  # Восстанавливаем логин, если в нем есть подчеркивания
+                    response = text.lower().strip()
+
+                    if response == 'да':
+                        if user_state.delete_entrepreneur(login):
+                            await update.message.reply_text(f"✅ Исполнитель {login} удален.")
+                        else:
+                            await update.message.reply_text("❌ Исполнитель не найден.")
+                    elif response == 'нет':
+                        await update.message.reply_text("❌ Удаление отменено.")
+                    else:
+                        await update.message.reply_text("❓ Пожалуйста, введите 'да' или 'нет'.")
+                        return  # Не сбрасываем состояние
+
+                user_state.set_state(user_id, None)
+                return
+
+            # УДАЛЕНИЕ ПОРТФОЛИО
+            elif state.startswith('delete_confirm_'):
+                response = text.lower().strip()
+                
+                category = context.user_data.get('delete_category')
+                index = context.user_data.get('delete_index')
+                title = context.user_data.get('delete_title', 'Неизвестный элемент')
+
+                if response == 'да':
+                    if user_state.delete_portfolio_item(category, index):
+                        await update.message.reply_text(f"✅ Элемент '{title}' успешно удален!")
+                    else:
+                        await update.message.reply_text("❌ Ошибка при удалении элемента.")
+                        
+                elif response == 'нет':
+                    await update.message.reply_text("❌ Удаление отменено.")
+                else:
+                    await update.message.reply_text("❓ Пожалуйста, напишите 'да' или 'нет'.")
+                    return  # Не сбрасываем состояние
+
+                # Очищаем данные
+                context.user_data.pop('delete_category', None)
+                context.user_data.pop('delete_index', None)
+                context.user_data.pop('delete_title', None)
+                user_state.set_state(user_id, None)
+                return
+
+            # ЧАТЫ
+            elif state.startswith('in_chat_'):
+                chat_id = state.replace('in_chat_', '')
+                message_text = text
+
+                chat_info = user_state.get_chat_info(chat_id)
+                if not chat_info or not chat_info.get('active', False):
+                    await update.message.reply_text("❌ Чат неактивен.")
+                    user_state.set_state(user_id, None)
+                    return
+
+                partner_chat_id = user_state.get_chat_partner(chat_id, user_id)
+                if not partner_chat_id:
+                    await update.message.reply_text("❌ Партнер по чату не найден.")
+                    return
+
+                from utils import get_user_role_in_chat, format_chat_message
+                sender_role = get_user_role_in_chat(user_id, chat_info)
+                formatted_message = format_chat_message(sender_role, message_text)
+
+                try:
+                    await context.bot.send_message(chat_id=partner_chat_id, text=formatted_message)
+                    await update.message.reply_text("✅ Сообщение доставлено")
+                except Exception as e:
+                    await update.message.reply_text("❌ Ошибка при отправке сообщения")
+                    print(f"Ошибка отправки сообщения: {e}")
+                return
+
+            else:
+                print(f"🔥 Неизвестное состояние: {state}")
+                await update.message.reply_text(f"❌ Неизвестное состояние: {state}")
+                user_state.set_state(user_id, None)
 
         except Exception as e:
             print(f"💥 КРИТИЧЕСКАЯ ОШИБКА: {e}")
@@ -81,11 +318,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             user_state.set_state(user_id, None)
 
 
-async def handle_old_portfolio_format(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str,
-                                      text: str) -> None:
+async def handle_old_portfolio_format(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str, text: str) -> None:
     """Обрабатывает старый формат добавления портфолио"""
     user_id = update.message.from_user.id
-
+    
     print(f"🔥 СТАРЫЙ ФОРМАТ: состояние {state}")
 
     if state == 'add_sites_title':
@@ -169,13 +405,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     print(f"📸 ФОТО: User={user_id}, State='{state}'")
 
     # Проверяем все возможные состояния для фото
-    if state in ['add_sites_photo', 'add_video_photo', 'portfolio_add_sites_images', 'portfolio_add_video_images']:
+    if state in ['add_sites_photo', 'add_video_photo']:
         try:
             # Получаем file_id самого большого размера фото
             photo_file_id = update.message.photo[-1].file_id
             print(f"📸 Сохраняем file_id: {photo_file_id}")
 
-            # СТАРЫЙ ФОРМАТ
             if state == 'add_sites_photo':
                 context.user_data['site_photo'] = photo_file_id
                 context.user_data['site_photo_type'] = 'file_id'
@@ -188,22 +423,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await update.message.reply_text("✅ Превью сохранено! Введите описание:")
                 user_state.set_state(user_id, 'add_video_description')
 
-            # НОВЫЙ ФОРМАТ
-            elif state == 'portfolio_add_sites_images':
-                images = context.user_data.get('portfolio_sites_images', [])
-                images.append(photo_file_id)
-                context.user_data['portfolio_sites_images'] = images
-                await update.message.reply_text("✅ Фото добавлено! Отправьте еще фото или напишите 'готово':")
-
-            elif state == 'portfolio_add_video_images':
-                images = context.user_data.get('portfolio_video_images', [])
-                images.append(photo_file_id)
-                context.user_data['portfolio_video_images'] = images
-                await update.message.reply_text("✅ Фото добавлено! Отправьте еще фото или напишите 'готово':")
-
         except Exception as e:
             print(f"💥 Ошибка при обработке фото: {e}")
-            await update.message.reply_text(f"Ошибка при сохранении фото: {e}")
+            await update.message.reply_text(f"❌ Ошибка при сохранении фото: {e}")
     else:
         print(f"📸 Неподходящее состояние для фото: {state}")
-        await update.message.reply_text("Отправьте фото в нужный момент процесса добавления.")
+        await update.message.reply_text("❌ Отправьте фото в нужный момент процесса добавления.")
