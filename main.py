@@ -266,31 +266,47 @@ def main() -> None:
 
     print("Бот запускается с поддержкой уведомлений от администратора...")
 
-    # Запускаем бота с инициализацией фоновых задач
-    async def run_bot():
-        async with application:
-            # Запускаем фоновые задачи после инициализации
-            await start_background_tasks(firebase_manager, application)
+    # Упрощенный запуск для Railway
+    try:
+        # Создаем событийный цикл если его нет
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
-            # Запускаем бота
-            await application.start()
-            await application.updater.start_polling()
-
+        # Запускаем фоновые задачи
+        async def init_and_run():
+            # Запускаем фоновые задачи
+            admin_service = await start_background_tasks(firebase_manager, application)
+            
             print("Бот запущен и готов к работе!")
             print("Система чатов и уведомлений активна!")
-            print("Для остановки нажмите Ctrl+C")
+            
+            # Запускаем основной polling
+            async with application:
+                await application.start()
+                await application.updater.start_polling()
+                
+                # Ждем остановки
+                try:
+                    await asyncio.Event().wait()
+                except KeyboardInterrupt:
+                    print("Остановка бота...")
+                finally:
+                    admin_service.stop_monitoring()
+                    await application.updater.stop()
+                    await application.stop()
 
-            # Ждем завершения
-            try:
-                await asyncio.Event().wait()
-            except KeyboardInterrupt:
-                print("Остановка бота...")
-            finally:
-                await application.updater.stop()
-                await application.stop()
-
-    # Запускаем основной цикл
-    asyncio.run(run_bot())
+        # Запускаем
+        loop.run_until_complete(init_and_run())
+        
+    except KeyboardInterrupt:
+        print("Бот остановлен пользователем")
+    except Exception as e:
+        print(f"Ошибка запуска бота: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == '__main__':
