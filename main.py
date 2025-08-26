@@ -1,4 +1,4 @@
-# main.py - модернизированная версия с уведомлениями от администратора (без JobQueue)
+# main.py - модернизированная версия с уведомлениями от администратора (исправленная для Railway)
 import logging
 import asyncio
 from datetime import datetime, timedelta
@@ -246,6 +246,8 @@ async def start_background_tasks(firebase_manager, application):
 
 def main() -> None:
     """Основная функция запуска бота"""
+    print("Запуск бота с полной функциональностью...")
+    
     setup_logging()
 
     # Инициализация Firebase
@@ -266,16 +268,12 @@ def main() -> None:
 
     print("Бот запускается с поддержкой уведомлений от администратора...")
 
-    # Упрощенный запуск для Railway
+    # ИСПРАВЛЕНО: Упрощенная версия запуска для Railway
     try:
-        # Создаем событийный цикл если его нет
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        # Запускаем фоновые задачи
+        # Создаем event loop для Railway
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         async def init_and_run():
             # Запускаем фоновые задачи
             admin_service = await start_background_tasks(firebase_manager, application)
@@ -283,30 +281,20 @@ def main() -> None:
             print("Бот запущен и готов к работе!")
             print("Система чатов и уведомлений активна!")
             
-            # Запускаем основной polling
-            async with application:
-                await application.start()
-                await application.updater.start_polling()
-                
-                # Ждем остановки
-                try:
-                    await asyncio.Event().wait()
-                except KeyboardInterrupt:
-                    print("Остановка бота...")
-                finally:
-                    admin_service.stop_monitoring()
-                    await application.updater.stop()
-                    await application.stop()
+            # Запускаем основной polling (синхронный способ)
+            application.run_polling()
 
-        # Запускаем
+        # Используем run_until_complete для стабильности
         loop.run_until_complete(init_and_run())
         
-    except KeyboardInterrupt:
-        print("Бот остановлен пользователем")
     except Exception as e:
         print(f"Ошибка запуска бота: {e}")
         import traceback
         traceback.print_exc()
+        
+        # Fallback - запуск без фоновых задач
+        print("Попытка запуска в упрощенном режиме...")
+        application.run_polling()
 
 
 if __name__ == '__main__':
