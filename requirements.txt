@@ -1,6 +1,8 @@
 python-telegram-bot==20.7
-aiofiles==23.2.1
-firebase-admin==6.2.0
-yoomoney==0.1.4
-python-dotenv==1.0.0
-asyncio
+aiofiles
+firebase-admin
+yoomoney
+python-dotenv
+requests
+google-cloud-firestore
+google-auth
