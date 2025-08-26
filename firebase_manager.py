@@ -1,525 +1,488 @@
-# firebase_manager.py - исправленная версия с поддержкой админ-панели
+# firebase_manager.py - исправленная версия с улучшенной аутентификацией
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
-import uuid
+import json
+import os
+from config import DEFAULT_RATING, DEFAULT_BALANCE, DEFAULT_CLIENT_STATUS
 
 
 class FirebaseManager:
-    def __init__(self, service_account_path):
-        """Инициализация Firebase"""
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(service_account_path)
-            firebase_admin.initialize_app(cred)
+    def __init__(self, credentials_path: str = None):
+        """Инициализация Firebase Manager"""
+        try:
+            # Проверяем, не инициализирован ли уже Firebase
+            if not firebase_admin._apps:
+                print("Инициализация Firebase...")
+                
+                # Пытаемся загрузить credentials разными способами
+                if credentials_path and os.path.exists(credentials_path):
+                    print(f"Загружаем credentials из файла: {credentials_path}")
+                    cred = credentials.Certificate(credentials_path)
+                else:
+                    print("Файл credentials не найден, пытаемся использовать переменные окружения...")
+                    # Пытаемся собрать из переменных окружения
+                    cred_dict = self._get_credentials_from_env()
+                    if cred_dict:
+                        print("Credentials собраны из переменных окружения")
+                        cred = credentials.Certificate(cred_dict)
+                    else:
+                        raise ValueError("Не удалось найти Firebase credentials")
 
-        self.db = firestore.client()
-        print("FirebaseManager инициализирован")
+                # Инициализируем Firebase
+                firebase_admin.initialize_app(cred)
+                print("Firebase успешно инициализирован!")
+            else:
+                print("Firebase уже инициализирован")
 
-    # ПОЛЬЗОВАТЕЛИ
+            # Получаем клиент Firestore
+            self.db = firestore.client()
+            print("Firestore клиент создан")
+            
+            # Проверяем соединение
+            self._test_connection()
+            
+        except Exception as e:
+            print(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации Firebase: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    def _get_credentials_from_env(self):
+        """Собираем credentials из переменных окружения"""
+        try:
+            # Сначала пытаемся прочитать полный JSON из FIREBASE_CREDENTIALS
+            firebase_credentials = os.getenv('FIREBASE_CREDENTIALS')
+            if firebase_credentials:
+                print("Найдена переменная FIREBASE_CREDENTIALS")
+                try:
+                    cred_dict = json.loads(firebase_credentials)
+                    print("JSON credentials успешно распарсен")
+                    return cred_dict
+                except json.JSONDecodeError as e:
+                    print(f"Ошибка парсинга JSON из FIREBASE_CREDENTIALS: {e}")
+            
+            # Если нет полного JSON, пытаемся собрать из отдельных переменных
+            required_vars = [
+                'FIREBASE_PROJECT_ID', 'FIREBASE_PRIVATE_KEY', 'FIREBASE_CLIENT_EMAIL'
+            ]
+            
+            for var in required_vars:
+                if not os.getenv(var):
+                    print(f"Переменная окружения {var} не найдена")
+                    return None
+            
+            # Собираем словарь credentials
+            cred_dict = {
+                "type": "service_account",
+                "project_id": os.getenv('FIREBASE_PROJECT_ID'),
+                "private_key": os.getenv('FIREBASE_PRIVATE_KEY').replace('\\n', '\n'),
+                "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs"
+            }
+            
+            # Добавляем дополнительные поля если есть
+            if os.getenv('FIREBASE_PRIVATE_KEY_ID'):
+                cred_dict["private_key_id"] = os.getenv('FIREBASE_PRIVATE_KEY_ID')
+            if os.getenv('FIREBASE_CLIENT_ID'):
+                cred_dict["client_id"] = os.getenv('FIREBASE_CLIENT_ID')
+                
+            return cred_dict
+            
+        except Exception as e:
+            print(f"Ошибка сборки credentials из переменных: {e}")
+            return None
+
+    def _test_connection(self):
+        """Тестируем соединение с Firebase"""
+        try:
+            # Пытаемся получить список коллекций или создать тестовый документ
+            test_ref = self.db.collection('test').document('connection_test')
+            test_ref.set({
+                'test': True,
+                'timestamp': datetime.now()
+            })
+            print("✅ Соединение с Firebase работает")
+            
+            # Удаляем тестовый документ
+            test_ref.delete()
+            
+        except Exception as e:
+            print(f"❌ Ошибка при тестировании соединения: {e}")
+            raise
+
+    # МЕТОДЫ СОСТОЯНИЙ ПОЛЬЗОВАТЕЛЕЙ
+    def set_user_state(self, user_id: int, state: str) -> None:
+        """Устанавливает состояние пользователя"""
+        try:
+            states_ref = self.db.collection('user_states').document(str(user_id))
+            states_ref.set({
+                'user_id': str(user_id),
+                'state': state,
+                'updated_at': datetime.now()
+            })
+        except Exception as e:
+            print(f"Ошибка установки состояния пользователя {user_id}: {e}")
+
+    def get_user_state(self, user_id: int) -> str:
+        """Получает состояние пользователя"""
+        try:
+            states_ref = self.db.collection('user_states').document(str(user_id))
+            doc = states_ref.get()
+            if doc.exists:
+                return doc.to_dict().get('state', '')
+            return ''
+        except Exception as e:
+            print(f"Ошибка получения состояния пользователя {user_id}: {e}")
+            return ''
+
+    def clear_user_state(self, user_id: int) -> None:
+        """Очищает состояние пользователя"""
+        try:
+            states_ref = self.db.collection('user_states').document(str(user_id))
+            states_ref.delete()
+        except Exception as e:
+            print(f"Ошибка очистки состояния пользователя {user_id}: {e}")
+
+    # МЕТОДЫ РАБОТЫ С КЛИЕНТАМИ
+    def get_client_by_chat_id(self, chat_id: int) -> str:
+        """Получает логин клиента по chat_id"""
+        try:
+            users_ref = self.db.collection('users')
+            query = users_ref.where(field_path='chat_id', op_string='==', value=chat_id).where(field_path='role', op_string='==', value='client')
+            docs = query.get()
+            
+            for doc in docs:
+                data = doc.to_dict()
+                return data.get('username')
+            return None
+        except Exception as e:
+            print(f"Ошибка получения клиента по chat_id {chat_id}: {e}")
+            return None
+
     def register_client(self, username: str, password: str, chat_id: int = None, telegram_id: str = None) -> bool:
-        """Регистрация клиента"""
+        """Регистрирует нового клиента"""
         try:
             users_ref = self.db.collection('users')
-            existing_user = users_ref.where('username', '==', username).limit(1).get()
-
-            if existing_user:
-                return False
-
-            user_data = {
+            
+            # Проверяем, существует ли пользователь
+            existing_query = users_ref.where(field_path='username', op_string='==', value=username)
+            existing_docs = existing_query.get()
+            
+            if existing_docs:
+                return False  # Пользователь уже существует
+            
+            # Создаем нового клиента
+            client_data = {
                 'username': username,
-                'password': password,
+                'password': password,  # В реальном проекте должно быть зашифровано
                 'role': 'client',
-                'chat_id': chat_id,
-                'telegram_id': telegram_id or str(chat_id) if chat_id else None,
+                'status': DEFAULT_CLIENT_STATUS,
                 'created_at': datetime.now(),
-                'status': 'active'
-            }
-
-            users_ref.add(user_data)
-            print(f"Клиент {username} зарегистрирован")
-            return True
-
-        except Exception as e:
-            print(f"Ошибка регистрации клиента: {e}")
-            return False
-
-    def register_entrepreneur(self, username: str, password: str, chat_id: int = None, telegram_id: str = None) -> bool:
-        """Регистрация исполнителя"""
-        try:
-            users_ref = self.db.collection('users')
-            existing_user = users_ref.where('username', '==', username).limit(1).get()
-
-            if existing_user:
-                return False
-
-            user_data = {
-                'username': username,
-                'password': password,
-                'role': 'entrepreneur',
-                'chat_id': chat_id,
                 'telegram_id': telegram_id or str(chat_id) if chat_id else None,
-                'created_at': datetime.now(),
-                'balance': 0.0,
-                'rating': 10.0,
-                'completed_orders': 0,
-                'status': 'active'
+                'chat_id': chat_id
             }
-
-            users_ref.add(user_data)
-            print(f"Исполнитель {username} зарегистрирован")
+            
+            users_ref.document(username).set(client_data)
+            print(f"Клиент {username} зарегистрирован успешно")
             return True
-
+            
         except Exception as e:
-            print(f"Ошибка регистрации исполнителя: {e}")
+            print(f"Ошибка регистрации клиента {username}: {e}")
             return False
 
     def check_client(self, username: str, password: str) -> bool:
-        """Проверка авторизации клиента"""
+        """Проверяет данные клиента для входа"""
         try:
-            print(f"DEBUG: Проверяем клиента {username}")
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username).where('password', '==', password).where('role', '==',
-                                                                                                        'client')
-            users = query.get()
-
-            result = len(users) > 0
-            print(f"DEBUG: Клиент найден: {result}")
-            return result
-
+            users_ref = self.db.collection('users').document(username)
+            doc = users_ref.get()
+            
+            if doc.exists:
+                data = doc.to_dict()
+                return (data.get('password') == password and 
+                       data.get('role') == 'client' and
+                       data.get('status') == 'active')
+            return False
+            
         except Exception as e:
-            print(f"Ошибка проверки клиента: {e}")
+            print(f"Ошибка проверки клиента {username}: {e}")
+            return False
+
+    def set_client_chat_id(self, username: str, chat_id: int) -> None:
+        """Устанавливает chat_id для клиента"""
+        try:
+            users_ref = self.db.collection('users').document(username)
+            users_ref.update({
+                'chat_id': chat_id,
+                'last_login': datetime.now()
+            })
+        except Exception as e:
+            print(f"Ошибка установки chat_id для клиента {username}: {e}")
+
+    # МЕТОДЫ РАБОТЫ С ИСПОЛНИТЕЛЯМИ
+    def get_entrepreneur_by_chat_id(self, chat_id: int) -> str:
+        """Получает логин исполнителя по chat_id"""
+        try:
+            users_ref = self.db.collection('users')
+            query = users_ref.where(field_path='chat_id', op_string='==', value=chat_id).where(field_path='role', op_string='==', value='entrepreneur')
+            docs = query.get()
+            
+            for doc in docs:
+                data = doc.to_dict()
+                return data.get('username')
+            return None
+        except Exception as e:
+            print(f"Ошибка получения исполнителя по chat_id {chat_id}: {e}")
+            return None
+
+    def register_entrepreneur(self, username: str, password: str, chat_id: int = None, telegram_id: str = None) -> bool:
+        """Регистрирует нового исполнителя"""
+        try:
+            users_ref = self.db.collection('users')
+            
+            # Проверяем, существует ли пользователь
+            existing_query = users_ref.where(field_path='username', op_string='==', value=username)
+            existing_docs = existing_query.get()
+            
+            if existing_docs:
+                print(f"Исполнитель {username} уже существует, обновляем данные")
+                # Обновляем существующего
+                users_ref.document(username).update({
+                    'chat_id': chat_id,
+                    'telegram_id': telegram_id or str(chat_id) if chat_id else None,
+                    'last_login': datetime.now()
+                })
+            else:
+                # Создаем нового исполнителя
+                entrepreneur_data = {
+                    'username': username,
+                    'password': password,
+                    'role': 'entrepreneur',
+                    'status': 'active',
+                    'balance': DEFAULT_BALANCE,
+                    'rating': DEFAULT_RATING,
+                    'completed_orders': 0,
+                    'created_at': datetime.now(),
+                    'telegram_id': telegram_id or str(chat_id) if chat_id else None,
+                    'chat_id': chat_id
+                }
+                
+                users_ref.document(username).set(entrepreneur_data)
+                print(f"Исполнитель {username} зарегистрирован успешно")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Ошибка регистрации исполнителя {username}: {e}")
             return False
 
     def check_entrepreneur(self, username: str, password: str) -> bool:
-        """Проверка авторизации исполнителя (поддерживает роли entrepreneur и executor)"""
+        """Проверяет данные исполнителя для входа"""
         try:
-            print(f"DEBUG: Проверяем исполнителя {username} с паролем {password}")
-            users_ref = self.db.collection('users')
-
-            # Сначала ищем по username и password
-            query = users_ref.where('username', '==', username).where('password', '==', password)
-            users = query.get()
-
-            print(f"DEBUG: Найдено пользователей с логином и паролем: {len(users)}")
-
-            if users:
-                user_data = users[0].to_dict()
-                role = user_data.get('role')
-                print(f"DEBUG: Роль пользователя: {role}")
-
-                # Принимаем обе роли: entrepreneur и executor
-                result = role in ['entrepreneur', 'executor']
-                print(f"DEBUG: Результат проверки исполнителя: {result}")
-                return result
-
+            users_ref = self.db.collection('users').document(username)
+            doc = users_ref.get()
+            
+            if doc.exists:
+                data = doc.to_dict()
+                return (data.get('password') == password and 
+                       data.get('role') == 'entrepreneur' and
+                       data.get('status') == 'active')
+            return False
+            
+        except Exception as e:
+            print(f"Ошибка проверки исполнителя {username}: {e}")
             return False
 
+    def set_entrepreneur_chat_id(self, username: str, chat_id: int) -> None:
+        """Устанавливает chat_id для исполнителя"""
+        try:
+            users_ref = self.db.collection('users').document(username)
+            users_ref.update({
+                'chat_id': chat_id,
+                'last_login': datetime.now()
+            })
         except Exception as e:
-            print(f"Ошибка проверки исполнителя: {e}")
+            print(f"Ошибка установки chat_id для исполнителя {username}: {e}")
+
+    def get_balance(self, username: str) -> float:
+        """Получает баланс исполнителя"""
+        try:
+            users_ref = self.db.collection('users').document(username)
+            doc = users_ref.get()
+            
+            if doc.exists:
+                return doc.to_dict().get('balance', 0.0)
+            return 0.0
+            
+        except Exception as e:
+            print(f"Ошибка получения баланса {username}: {e}")
+            return 0.0
+
+    def update_balance(self, username: str, amount: float) -> bool:
+        """Обновляет баланс исполнителя"""
+        try:
+            users_ref = self.db.collection('users').document(username)
+            doc = users_ref.get()
+            
+            if doc.exists:
+                current_balance = doc.to_dict().get('balance', 0.0)
+                new_balance = current_balance + amount
+                
+                users_ref.update({
+                    'balance': new_balance,
+                    'updated_at': datetime.now()
+                })
+                print(f"Баланс {username} обновлен: {current_balance} -> {new_balance}")
+                return True
+            return False
+            
+        except Exception as e:
+            print(f"Ошибка обновления баланса {username}: {e}")
             return False
 
-    def get_client_by_chat_id(self, chat_id: int) -> str:
-        """Получение логина клиента по chat_id"""
+    def get_rating(self, username: str) -> float:
+        """Получает рейтинг исполнителя"""
+        try:
+            users_ref = self.db.collection('users').document(username)
+            doc = users_ref.get()
+            
+            if doc.exists:
+                return doc.to_dict().get('rating', DEFAULT_RATING)
+            return DEFAULT_RATING
+            
+        except Exception as e:
+            print(f"Ошибка получения рейтинга {username}: {e}")
+            return DEFAULT_RATING
+
+    def get_top_executor(self) -> str:
+        """Получает исполнителя с наивысшим рейтингом"""
         try:
             users_ref = self.db.collection('users')
-            query = users_ref.where('chat_id', '==', chat_id).where('role', '==', 'client')
-            users = query.get()
-
-            if users:
-                return users[0].to_dict()['username']
-            return None
-
+            query = users_ref.where(field_path='role', op_string='==', value='entrepreneur').where(field_path='status', op_string='==', value='active')
+            docs = query.get()
+            
+            best_executor = None
+            best_rating = 0
+            
+            for doc in docs:
+                data = doc.to_dict()
+                rating = data.get('rating', DEFAULT_RATING)
+                if rating > best_rating:
+                    best_rating = rating
+                    best_executor = data.get('username')
+            
+            print(f"Найден топ исполнитель: {best_executor} с рейтингом {best_rating}")
+            return best_executor
+            
         except Exception as e:
-            print(f"Ошибка получения клиента: {e}")
-            return None
-
-    def get_entrepreneur_by_chat_id(self, chat_id: int) -> str:
-        """Получение логина исполнителя по chat_id (поддерживает обе роли)"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('chat_id', '==', chat_id)
-            users = query.get()
-
-            for user_doc in users:
-                user_data = user_doc.to_dict()
-                if user_data.get('role') in ['entrepreneur', 'executor']:
-                    return user_data['username']
-
-            return None
-
-        except Exception as e:
-            print(f"Ошибка получения исполнителя: {e}")
-            return None
-
-    def set_client_chat_id(self, username: str, chat_id: int):
-        """Установка chat_id для клиента"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username).where('role', '==', 'client')
-            users = query.get()
-
-            if users:
-                user_doc = users[0]
-                user_doc.reference.update({'chat_id': chat_id})
-                print(f"Chat ID {chat_id} установлен для клиента {username}")
-
-        except Exception as e:
-            print(f"Ошибка установки chat_id: {e}")
-
-    def set_entrepreneur_chat_id(self, username: str, chat_id: int):
-        """Установка chat_id для исполнителя"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username)
-            users = query.get()
-
-            for user_doc in users:
-                user_data = user_doc.to_dict()
-                if user_data.get('role') in ['entrepreneur', 'executor']:
-                    user_doc.reference.update({'chat_id': chat_id})
-                    print(f"Chat ID {chat_id} установлен для исполнителя {username}")
-                    break
-
-        except Exception as e:
-            print(f"Ошибка установки chat_id: {e}")
-
-    def get_user_by_telegram_id(self, telegram_id: str) -> dict:
-        """Получение пользователя по telegram_id"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('telegram_id', '==', telegram_id)
-            users = query.get()
-
-            if users:
-                user_data = users[0].to_dict()
-                user_data['id'] = users[0].id
-                return user_data
-            return None
-
-        except Exception as e:
-            print(f"Ошибка получения пользователя по telegram_id: {e}")
-            return None
-
-    def get_user_by_username(self, username: str) -> dict:
-        """Получение пользователя по username"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username)
-            users = query.get()
-
-            if users:
-                user_data = users[0].to_dict()
-                user_data['id'] = users[0].id
-                return user_data
-            return None
-
-        except Exception as e:
-            print(f"Ошибка получения пользователя по username: {e}")
+            print(f"Ошибка поиска топ исполнителя: {e}")
             return None
 
     def get_user_chat_id_by_username(self, username: str) -> int:
-        """Получение chat_id пользователя по username"""
+        """Получает chat_id пользователя по username"""
         try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username)
-            users = query.get()
-
-            if users:
-                user_data = users[0].to_dict()
-                chat_id = user_data.get('chat_id')
-                print(f"DEBUG: Chat ID для {username}: {chat_id}")
-                return chat_id
-
-            print(f"DEBUG: Пользователь {username} не найден")
+            users_ref = self.db.collection('users').document(username)
+            doc = users_ref.get()
+            
+            if doc.exists:
+                return doc.to_dict().get('chat_id')
+            return None
+            
+        except Exception as e:
+            print(f"Ошибка получения chat_id для {username}: {e}")
             return None
 
-        except Exception as e:
-            print(f"Ошибка получения chat_id: {e}")
-            return None
-
-    # НОВЫЕ МЕТОДЫ ДЛЯ АДМИН-ПАНЕЛИ
-
-    def get_all_executors(self) -> list:
-        """Получение всех исполнителей для админ-панели"""
-        try:
-            users_ref = self.db.collection('users')
-            # Получаем всех пользователей с ролью entrepreneur или executor
-            all_users = users_ref.get()
-
-            executors = []
-            for user_doc in all_users:
-                user_data = user_doc.to_dict()
-                role = user_data.get('role')
-
-                if role in ['entrepreneur', 'executor']:
-                    user_data['id'] = user_doc.id
-                    executors.append(user_data)
-
-            print(f"DEBUG: Найдено исполнителей: {len(executors)}")
-            return executors
-
-        except Exception as e:
-            print(f"Ошибка получения всех исполнителей: {e}")
-            return []
-
-    def delete_executor(self, username: str) -> bool:
-        """Удаление исполнителя"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username)
-            users = query.get()
-
-            deleted = False
-            for user_doc in users:
-                user_data = user_doc.to_dict()
-                if user_data.get('role') in ['entrepreneur', 'executor']:
-                    user_doc.reference.delete()
-                    deleted = True
-                    print(f"Исполнитель {username} удален")
-                    break
-
-            return deleted
-
-        except Exception as e:
-            print(f"Ошибка удаления исполнителя: {e}")
-            return False
-
-    def get_admin_stats(self) -> dict:
-        """Получение статистики для админ-панели"""
-        try:
-            users_ref = self.db.collection('users')
-            orders_ref = self.db.collection('orders')
-            portfolio_ref = self.db.collection('portfolio')
-
-            # Получаем всех пользователей
-            all_users = users_ref.get()
-
-            clients_count = 0
-            executors_count = 0
-            total_balance = 0.0
-
-            for user_doc in all_users:
-                user_data = user_doc.to_dict()
-                role = user_data.get('role')
-
-                if role == 'client':
-                    clients_count += 1
-                elif role in ['entrepreneur', 'executor']:
-                    executors_count += 1
-                    total_balance += user_data.get('balance', 0)
-
-            # Получаем заказы
-            all_orders = orders_ref.get()
-            orders_count = len(all_orders)
-
-            active_orders = 0
-            completed_orders = 0
-
-            for order_doc in all_orders:
-                order_data = order_doc.to_dict()
-                status = order_data.get('status')
-
-                if status in ['in_work', 'pending', 'waiting_payment']:
-                    active_orders += 1
-                elif status == 'completed':
-                    completed_orders += 1
-
-            # Получаем портфолио
-            portfolio_items = portfolio_ref.get()
-            portfolio_count = len(portfolio_items)
-
-            return {
-                'clients_count': clients_count,
-                'executors_count': executors_count,
-                'total_users': clients_count + executors_count,
-                'orders_count': orders_count,
-                'active_orders': active_orders,
-                'completed_orders': completed_orders,
-                'portfolio_count': portfolio_count,
-                'total_balance': total_balance
-            }
-
-        except Exception as e:
-            print(f"Ошибка получения статистики: {e}")
-            return {}
-
-    # БАЛАНС И РЕЙТИНГ
-    def get_balance(self, username: str) -> float:
-        """Получение баланса исполнителя"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username)
-            users = query.get()
-
-            for user_doc in users:
-                user_data = user_doc.to_dict()
-                if user_data.get('role') in ['entrepreneur', 'executor']:
-                    return user_data.get('balance', 0.0)
-
-            return 0.0
-
-        except Exception as e:
-            print(f"Ошибка получения баланса: {e}")
-            return 0.0
-
-    def update_balance(self, username: str, amount: float):
-        """Обновление баланса исполнителя"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username)
-            users = query.get()
-
-            for user_doc in users:
-                user_data = user_doc.to_dict()
-                if user_data.get('role') in ['entrepreneur', 'executor']:
-                    current_balance = user_data.get('balance', 0.0)
-                    new_balance = current_balance + amount
-
-                    user_doc.reference.update({'balance': new_balance})
-                    print(f"Баланс {username} обновлен: {current_balance} -> {new_balance}")
-                    break
-
-        except Exception as e:
-            print(f"Ошибка обновления баланса: {e}")
-
-    def get_rating(self, username: str) -> float:
-        """Получение рейтинга исполнителя"""
-        try:
-            users_ref = self.db.collection('users')
-            query = users_ref.where('username', '==', username)
-            users = query.get()
-
-            for user_doc in users:
-                user_data = user_doc.to_dict()
-                if user_data.get('role') in ['entrepreneur', 'executor']:
-                    return user_data.get('rating', 10.0)
-
-            return 10.0
-
-        except Exception as e:
-            print(f"Ошибка получения рейтинга: {e}")
-            return 10.0
-
-    def get_top_executor(self) -> str:
-        """Получение исполнителя с наивысшим рейтингом"""
-        try:
-            print("DEBUG: Ищем топ исполнителя...")
-            users_ref = self.db.collection('users')
-
-            # Получаем всех исполнителей и сортируем вручную
-            all_users = users_ref.get()
-            executors = []
-
-            for user_doc in all_users:
-                user_data = user_doc.to_dict()
-                role = user_data.get('role')
-                if role in ['entrepreneur', 'executor']:
-                    executors.append(user_data)
-                    print(
-                        f"DEBUG: Найден исполнитель {user_data.get('username')} с рейтингом {user_data.get('rating', 10)}")
-
-            if executors:
-                # Сортируем по рейтингу
-                top_executor = max(executors, key=lambda x: x.get('rating', 0))
-                username = top_executor['username']
-                print(f"DEBUG: Выбран топ исполнитель: {username} с рейтингом {top_executor.get('rating')}")
-                return username
-            else:
-                print("DEBUG: Исполнители не найдены")
-                return None
-
-        except Exception as e:
-            print(f"DEBUG: Ошибка получения топ исполнителя: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    # ЗАКАЗЫ
+    # МЕТОДЫ РАБОТЫ С ЗАКАЗАМИ
     def create_order(self, order_data: dict) -> str:
-        """Создание заказа"""
+        """Создает новый заказ"""
         try:
-            order_data['created_date'] = datetime.now()
-            order_data['id'] = str(uuid.uuid4())
-
             orders_ref = self.db.collection('orders')
+            order_data['created_at'] = datetime.now()
+            
+            # Добавляем заказ и получаем ссылку на документ
             doc_ref = orders_ref.add(order_data)
-
-            # Обновляем ID в документе
-            doc_ref[1].update({'id': doc_ref[1].id})
-
-            print(f"Заказ создан: {doc_ref[1].id}")
-            return doc_ref[1].id
-
+            order_id = doc_ref[1].id  # doc_ref это кортеж (timestamp, DocumentReference)
+            
+            print(f"Заказ создан с ID: {order_id}")
+            return order_id
+            
         except Exception as e:
             print(f"Ошибка создания заказа: {e}")
             return None
 
     def get_order_by_id(self, order_id: str) -> dict:
-        """Получение заказа по ID"""
+        """Получает заказ по ID"""
         try:
-            orders_ref = self.db.collection('orders')
-            order_doc = orders_ref.document(order_id).get()
-
-            if order_doc.exists:
-                return order_doc.to_dict()
+            orders_ref = self.db.collection('orders').document(order_id)
+            doc = orders_ref.get()
+            
+            if doc.exists:
+                data = doc.to_dict()
+                data['id'] = order_id
+                return data
+            return None
+            
+        except Exception as e:
+            print(f"Ошибка получения заказа {order_id}: {e}")
             return None
 
-        except Exception as e:
-            print(f"Ошибка получения заказа: {e}")
-            return None
-
-    def update_order(self, order_id: str, update_data: dict):
-        """Обновление заказа"""
+    def update_order(self, order_id: str, updates: dict) -> bool:
+        """Обновляет заказ"""
         try:
-            orders_ref = self.db.collection('orders')
-            orders_ref.document(order_id).update(update_data)
-            print(f"Заказ {order_id} обновлен")
-
+            orders_ref = self.db.collection('orders').document(order_id)
+            updates['updated_at'] = datetime.now()
+            orders_ref.update(updates)
+            return True
+            
         except Exception as e:
-            print(f"Ошибка обновления заказа: {e}")
+            print(f"Ошибка обновления заказа {order_id}: {e}")
+            return False
 
     def get_orders_by_customer(self, customer_username: str) -> list:
-        """Получение заказов клиента"""
+        """Получает заказы клиента"""
         try:
             orders_ref = self.db.collection('orders')
-            query = orders_ref.where('customer.username', '==', customer_username)
-            orders = query.get()
-
-            result = []
-            for order_doc in orders:
-                order_data = order_doc.to_dict()
-                order_data['id'] = order_doc.id
-                result.append(order_data)
-
-            return result
-
+            query = orders_ref.where(field_path='customer.username', op_string='==', value=customer_username)
+            docs = query.get()
+            
+            orders = []
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                orders.append(data)
+            
+            return orders
+            
         except Exception as e:
-            print(f"Ошибка получения заказов клиента: {e}")
+            print(f"Ошибка получения заказов клиента {customer_username}: {e}")
             return []
 
     def get_orders_by_executor(self, executor_username: str) -> list:
-        """Получение заказов исполнителя"""
+        """Получает заказы исполнителя"""
         try:
             orders_ref = self.db.collection('orders')
-            query = orders_ref.where('executor.username', '==', executor_username)
-            orders = query.get()
-
-            result = []
-            for order_doc in orders:
-                order_data = order_doc.to_dict()
-                order_data['id'] = order_doc.id
-                result.append(order_data)
-
-            return result
-
+            query = orders_ref.where(field_path='executor.username', op_string='==', value=executor_username)
+            docs = query.get()
+            
+            orders = []
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                orders.append(data)
+            
+            return orders
+            
         except Exception as e:
-            print(f"Ошибка получения заказов исполнителя: {e}")
+            print(f"Ошибка получения заказов исполнителя {executor_username}: {e}")
             return []
 
-    # СООБЩЕНИЯ
-    def add_message(self, order_id: str, user_id: str, user_role: str, text: str):
-        """Добавление сообщения в чат"""
+    # МЕТОДЫ РАБОТЫ С СООБЩЕНИЯМИ
+    def add_message(self, order_id: str, user_id: str, user_role: str, text: str) -> bool:
+        """Добавляет сообщение в чат заказа"""
         try:
+            messages_ref = self.db.collection('messages')
+            
             message_data = {
                 'order_id': order_id,
                 'user_id': user_id,
@@ -527,251 +490,239 @@ class FirebaseManager:
                 'text': text,
                 'timestamp': datetime.now()
             }
-
-            messages_ref = self.db.collection('messages')
+            
             messages_ref.add(message_data)
-            print(f"Сообщение добавлено в заказ {order_id}")
-
+            print(f"Сообщение добавлено в чат заказа {order_id}")
+            return True
+            
         except Exception as e:
             print(f"Ошибка добавления сообщения: {e}")
+            return False
 
     def get_messages_by_order(self, order_id: str) -> list:
-        """Получение сообщений по заказу"""
+        """Получает сообщения по заказу"""
         try:
             messages_ref = self.db.collection('messages')
-            query = messages_ref.where('order_id', '==', order_id).order_by('timestamp')
-            messages = query.get()
-
-            result = []
-            for msg_doc in messages:
-                msg_data = msg_doc.to_dict()
-                result.append(msg_data)
-
-            return result
-
+            query = messages_ref.where(field_path='order_id', op_string='==', value=order_id).order_by('timestamp')
+            docs = query.get()
+            
+            messages = []
+            for doc in docs:
+                data = doc.to_dict()
+                messages.append(data)
+            
+            return messages
+            
         except Exception as e:
-            print(f"Ошибка получения сообщений: {e}")
+            print(f"Ошибка получения сообщений для заказа {order_id}: {e}")
             return []
 
-    # СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЕЙ
-    def set_user_state(self, user_id: int, state: str):
-        """Установка состояния пользователя"""
-        try:
-            states_ref = self.db.collection('user_states')
-            states_ref.document(str(user_id)).set({
-                'state': state,
-                'updated_at': datetime.now()
-            })
-
-        except Exception as e:
-            print(f"Ошибка установки состояния: {e}")
-
-    def get_user_state(self, user_id: int) -> str:
-        """Получение состояния пользователя"""
-        try:
-            states_ref = self.db.collection('user_states')
-            state_doc = states_ref.document(str(user_id)).get()
-
-            if state_doc.exists:
-                return state_doc.to_dict().get('state')
-            return None
-
-        except Exception as e:
-            print(f"Ошибка получения состояния: {e}")
-            return None
-
-    def clear_user_state(self, user_id: int):
-        """Очистка состояния пользователя"""
-        try:
-            states_ref = self.db.collection('user_states')
-            states_ref.document(str(user_id)).delete()
-
-        except Exception as e:
-            print(f"Ошибка очистки состояния: {e}")
-
-    # ПОРТФОЛИО И РАБОТЫ - ИСПРАВЛЕННЫЕ МЕТОДЫ
-
-    def get_portfolio(self) -> list:
-        """Получение элементов портфолио - ИСПРАВЛЕНО"""
-        try:
-            portfolio_ref = self.db.collection('portfolio')
-            portfolio_query = portfolio_ref.get()  # Получаем QueryResultsList
-
-            result = []
-            # ИСПРАВЛЕНО: перебираем QueryResultsList напрямую, без .docs
-            for item_doc in portfolio_query:
-                item_data = item_doc.to_dict()
-                item_data['id'] = item_doc.id
-                result.append(item_data)
-
-            print(f"DEBUG: Загружено элементов портфолио: {len(result)}")
-            return result
-
-        except Exception as e:
-            print(f"Ошибка получения портфолио: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-
-    def get_portfolio_count(self) -> int:
-        """Получение количества элементов портфолио"""
-        try:
-            portfolio_ref = self.db.collection('portfolio')
-            portfolio_query = portfolio_ref.get()
-            return len(portfolio_query)
-
-        except Exception as e:
-            print(f"Ошибка получения количества портфолио: {e}")
-            return 0
-
-    def get_works_by_subcategory(self, subcategory: str) -> list:
-        """Получение работ по подкатегории - ИСПРАВЛЕНО"""
-        try:
-            works_ref = self.db.collection('works')
-            query = works_ref.where('subcategory', '==', subcategory)
-            works_query = query.get()  # Получаем QueryResultsList
-
-            result = []
-            # ИСПРАВЛЕНО: перебираем QueryResultsList напрямую, без .docs
-            for work_doc in works_query:
-                work_data = work_doc.to_dict()
-                work_data['id'] = work_doc.id
-                result.append(work_data)
-
-            print(f"DEBUG: Загружено работ для {subcategory}: {len(result)}")
-            return result
-
-        except Exception as e:
-            print(f"Ошибка получения работ: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-
-    def add_portfolio_item(self, category: str, title: str, description: str, photo: str, photo_type: str = 'file_id'):
-        """Добавление элемента в портфолио"""
-        try:
-            portfolio_data = {
-                'category': category,
-                'title': title,
-                'description': description,
-                'photo': photo,
-                'photo_type': photo_type,
-                'created_at': datetime.now()
-            }
-
-            portfolio_ref = self.db.collection('portfolio')
-            doc_ref = portfolio_ref.add(portfolio_data)
-            print(f"Элемент портфолио добавлен: {title} (ID: {doc_ref[1].id})")
-
-        except Exception as e:
-            print(f"Ошибка добавления в портфолио: {e}")
-            import traceback
-            traceback.print_exc()
-            raise e
-
-    def add_work_item(self, subcategory: str, title: str, description: str, photo: str, photo_type: str = 'file_id',
-                      url: str = None, price: int = None):
-        """Добавление работы в подкатегорию"""
-        try:
-            work_data = {
-                'subcategory': subcategory,
-                'title': title,
-                'description': description,
-                'photo': photo,
-                'photo_type': photo_type,
-                'url': url,
-                'price': price,
-                'created_at': datetime.now()
-            }
-
-            works_ref = self.db.collection('works')
-            doc_ref = works_ref.add(work_data)
-            print(f"Работа добавлена: {title} (ID: {doc_ref[1].id})")
-
-        except Exception as e:
-            print(f"Ошибка добавления работы: {e}")
-            import traceback
-            traceback.print_exc()
-            raise e
-
-    # ПЛАТЕЖИ
+    # МЕТОДЫ РАБОТЫ С ПЛАТЕЖАМИ
     def create_payment(self, payment_data: dict) -> str:
-        """Создание записи о платеже"""
+        """Создает платеж"""
         try:
             payments_ref = self.db.collection('payments')
+            payment_data['created_at'] = datetime.now()
+            
             doc_ref = payments_ref.add(payment_data)
-
-            print(f"Платеж создан: {doc_ref.id}")
-            return doc_ref.id
-
+            payment_id = doc_ref[1].id
+            
+            print(f"Платеж создан с ID: {payment_id}")
+            return payment_id
+            
         except Exception as e:
             print(f"Ошибка создания платежа: {e}")
             return None
 
     def get_payment_by_order(self, order_id: str) -> dict:
-        """Получение платежа по ID заказа"""
+        """Получает платеж по заказу"""
         try:
             payments_ref = self.db.collection('payments')
-            query = payments_ref.where('order_id', '==', order_id)
-            payments = query.get()
-
-            if payments:
-                payment_data = payments[0].to_dict()
-                payment_data['id'] = payments[0].id
-                return payment_data
+            query = payments_ref.where(field_path='order_id', op_string='==', value=order_id)
+            docs = query.get()
+            
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                return data
+                
             return None
-
+            
         except Exception as e:
-            print(f"Ошибка получения платежа: {e}")
+            print(f"Ошибка получения платежа для заказа {order_id}: {e}")
             return None
 
-    def get_payment_by_id(self, payment_id: str) -> dict:
-        """Получение платежа по payment_id"""
+    def update_payment_status(self, payment_id: str, status: str, timestamp: datetime) -> bool:
+        """Обновляет статус платежа"""
         try:
-            payments_ref = self.db.collection('payments')
-            query = payments_ref.where('payment_id', '==', payment_id)
-            payments = query.get()
-
-            if payments:
-                payment_data = payments[0].to_dict()
-                payment_data['id'] = payments[0].id
-                return payment_data
-            return None
-
+            payments_ref = self.db.collection('payments').document(payment_id)
+            payments_ref.update({
+                'status': status,
+                'status_updated_at': timestamp,
+                'updated_at': datetime.now()
+            })
+            return True
+            
         except Exception as e:
-            print(f"Ошибка получения платежа по payment_id: {e}")
-            return None
-
-    def update_payment_status(self, payment_doc_id: str, status: str, paid_at: datetime = None):
-        """Обновление статуса платежа"""
-        try:
-            payments_ref = self.db.collection('payments')
-            update_data = {'status': status}
-
-            if paid_at:
-                update_data['paid_at'] = paid_at
-
-            payments_ref.document(payment_doc_id).update(update_data)
-            print(f"Статус платежа {payment_doc_id} обновлен: {status}")
-
-        except Exception as e:
-            print(f"Ошибка обновления статуса платежа: {e}")
+            print(f"Ошибка обновления статуса платежа {payment_id}: {e}")
+            return False
 
     def get_pending_payments_by_user(self, user_id: int) -> list:
-        """Получение ожидающих платежей пользователя"""
+        """Получает ожидающие платежи пользователя"""
         try:
             payments_ref = self.db.collection('payments')
-            query = payments_ref.where('user_id', '==', user_id).where('status', '==', 'pending')
-            payments = query.get()
-
-            result = []
-            for payment_doc in payments:
-                payment_data = payment_doc.to_dict()
-                payment_data['id'] = payment_doc.id
-                result.append(payment_data)
-
-            return result
-
+            query = payments_ref.where(field_path='user_id', op_string='==', value=user_id).where(field_path='status', op_string='==', value='pending')
+            docs = query.get()
+            
+            payments = []
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                payments.append(data)
+            
+            return payments
+            
         except Exception as e:
-            print(f"Ошибка получения ожидающих платежей: {e}")
+            print(f"Ошибка получения ожидающих платежей пользователя {user_id}: {e}")
             return []
+
+    # МЕТОДЫ РАБОТЫ С ПОРТФОЛИО
+    def get_portfolio(self) -> list:
+        """Получает все элементы портфолио"""
+        try:
+            portfolio_ref = self.db.collection('portfolio')
+            docs = portfolio_ref.get()
+            
+            portfolio = []
+            for doc in docs:
+                data = doc.to_dict()
+                portfolio.append(data)
+            
+            return portfolio
+            
+        except Exception as e:
+            print(f"Ошибка получения портфолио: {e}")
+            return []
+
+    def get_works_by_subcategory(self, subcategory: str) -> list:
+        """Получает работы по подкатегории"""
+        try:
+            portfolio_ref = self.db.collection('portfolio')
+            query = portfolio_ref.where(field_path='subcategory', op_string='==', value=subcategory)
+            docs = query.get()
+            
+            works = []
+            for doc in docs:
+                data = doc.to_dict()
+                works.append(data)
+            
+            return works
+            
+        except Exception as e:
+            print(f"Ошибка получения работ подкатегории {subcategory}: {e}")
+            return []
+
+    # ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ
+    def get_all_executors(self) -> list:
+        """Получает всех исполнителей"""
+        try:
+            users_ref = self.db.collection('users')
+            query = users_ref.where(field_path='role', op_string='==', value='entrepreneur')
+            docs = query.get()
+            
+            executors = []
+            for doc in docs:
+                data = doc.to_dict()
+                executors.append(data)
+            
+            return executors
+            
+        except Exception as e:
+            print(f"Ошибка получения всех исполнителей: {e}")
+            return []
+
+    def delete_executor(self, username: str) -> bool:
+        """Удаляет исполнителя"""
+        try:
+            users_ref = self.db.collection('users').document(username)
+            doc = users_ref.get()
+            
+            if doc.exists and doc.to_dict().get('role') == 'entrepreneur':
+                users_ref.delete()
+                return True
+            return False
+            
+        except Exception as e:
+            print(f"Ошибка удаления исполнителя {username}: {e}")
+            return False
+
+    def get_portfolio_count(self) -> int:
+        """Получает количество элементов портфолио"""
+        try:
+            portfolio_ref = self.db.collection('portfolio')
+            docs = portfolio_ref.get()
+            return len(docs)
+            
+        except Exception as e:
+            print(f"Ошибка получения количества портфолио: {e}")
+            return 0
+
+    def get_admin_stats(self) -> dict:
+        """Получает статистику для админ-панели"""
+        try:
+            stats = {}
+            
+            # Считаем пользователей
+            users_ref = self.db.collection('users')
+            all_users = users_ref.get()
+            
+            clients_count = 0
+            executors_count = 0
+            
+            for doc in all_users:
+                data = doc.to_dict()
+                if data.get('role') == 'client':
+                    clients_count += 1
+                elif data.get('role') == 'entrepreneur':
+                    executors_count += 1
+            
+            stats['clients_count'] = clients_count
+            stats['executors_count'] = executors_count
+            stats['total_users'] = len(all_users)
+            
+            # Считаем заказы
+            orders_ref = self.db.collection('orders')
+            all_orders = orders_ref.get()
+            
+            active_orders = 0
+            completed_orders = 0
+            
+            for doc in all_orders:
+                data = doc.to_dict()
+                status = data.get('status', '')
+                if status in ['in_work', 'on_review', 'pending']:
+                    active_orders += 1
+                elif status == 'completed':
+                    completed_orders += 1
+            
+            stats['orders_count'] = len(all_orders)
+            stats['active_orders'] = active_orders
+            stats['completed_orders'] = completed_orders
+            
+            # Считаем портфолио
+            stats['portfolio_count'] = self.get_portfolio_count()
+            
+            # Считаем общий баланс исполнителей
+            total_balance = 0
+            for doc in all_users:
+                data = doc.to_dict()
+                if data.get('role') == 'entrepreneur':
+                    total_balance += data.get('balance', 0)
+            
+            stats['total_balance'] = total_balance
+            
+            return stats
+            
+        except Exception as e:
+            print(f"Ошибка получения статистики: {e}")
+            return {}
