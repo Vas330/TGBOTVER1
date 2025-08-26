@@ -1,4 +1,4 @@
-# config.py - исправленная версия с защитой от ошибок Firebase
+# config.py - полная исправленная версия
 import os
 import json
 import tempfile
@@ -9,7 +9,7 @@ print("Загрузка конфигурации...")
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8394310213:AAHG-sJ_U11zIdrjTQ1b2SZMpNZ3ZWj25Vs')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '7014800288'))
 
-# Firebase с защитой от ошибок
+# Firebase с проверкой валидности
 def setup_firebase_safely():
     """Безопасная настройка Firebase"""
     try:
@@ -21,30 +21,26 @@ def setup_firebase_safely():
             temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
             json.dump(creds_dict, temp_file, indent=2)
             temp_file.close()
-            print("Firebase credentials загружены из Railway Variables")
+            print("Firebase credentials загружены из Railway")
             return temp_file.name
             
         elif os.path.exists('serviceAccountKey.json'):
-            # Локальный файл - НО проверяем его валидность
+            # Проверяем валидность локального файла
             with open('serviceAccountKey.json', 'r') as f:
                 data = json.load(f)
-                # Проверяем ключевые поля
                 required_fields = ['type', 'project_id', 'private_key', 'client_email']
                 if all(field in data for field in required_fields):
-                    print("Найден валидный локальный serviceAccountKey.json")
+                    print("Найден валидный serviceAccountKey.json")
                     return 'serviceAccountKey.json'
                 else:
-                    print("ОШИБКА: serviceAccountKey.json поврежден - отсутствуют ключевые поля")
+                    print("ОШИБКА: serviceAccountKey.json поврежден")
                     return None
         else:
             print("Firebase credentials не найдены")
             return None
             
-    except json.JSONDecodeError as e:
-        print(f"ОШИБКА: Неверный JSON в Firebase credentials: {e}")
-        return None
     except Exception as e:
-        print(f"ОШИБКА настройки Firebase: {e}")
+        print(f"Ошибка Firebase setup: {e}")
         return None
 
 FIREBASE_KEY_PATH = setup_firebase_safely()
@@ -58,9 +54,11 @@ DEFAULT_RATING = 10.0
 DEFAULT_BALANCE = 0.0
 DEFAULT_CLIENT_STATUS = 'active'
 
+# Флаги
+USE_FIREBASE = FIREBASE_KEY_PATH is not None
+RAILWAY_ENVIRONMENT = os.getenv('RAILWAY_ENVIRONMENT', 'production')
+
 print("config.py загружен")
 print(f"BOT_TOKEN: {'настроен' if BOT_TOKEN else 'отсутствует'}")
-print(f"Firebase: {'настроен' if FIREBASE_KEY_PATH else 'отключен'}")
-
-# Флаг для использования Firebase
-USE_FIREBASE = FIREBASE_KEY_PATH is not None
+print(f"Firebase: {'настроен' if USE_FIREBASE else 'отключен'}")
+print(f"Environment: {RAILWAY_ENVIRONMENT}")
