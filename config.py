@@ -6,7 +6,7 @@ import tempfile
 print("Загрузка конфигурации...")
 
 # Основные переменные
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8274498333:AAHqgvtdBNyTJrZdJGpjd7eRX5bKIKjNLCM')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '7014800288'))
 
 def setup_firebase():
@@ -81,4 +81,5 @@ print("config.py загружен")
 print(f"BOT_TOKEN: {'настроен' if BOT_TOKEN else 'отсутствует'}")
 print(f"Firebase: {'настроен' if USE_FIREBASE else 'отключен'}")
 print(f"USE_FIREBASE: {USE_FIREBASE}")
+
 
